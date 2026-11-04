@@ -9,21 +9,33 @@ import {
   Revenue,
 } from './definitions';
 import { formatCurrency } from './utils';
+import { unstable_noStore as noStore } from 'next/cache';
+
+const pg = require("pg");
+const pool = new pg.Pool({
+    user: "postgres",
+    host: "localhost",
+    database: "nextjs",
+    password: "lol",
+    port: 5432,
+});
+
 
 export async function fetchRevenue() {
   // Add noStore() here to prevent the response from being cached.
   // This is equivalent to in fetch(..., {cache: 'no-store'}).
+  noStore();
 
   try {
     // Artificially delay a response for demo purposes.
     // Don't do this in production :)
 
-    // console.log('Fetching revenue data...');
-    // await new Promise((resolve) => setTimeout(resolve, 3000));
+     console.log('01 - Fetching revenue data...');
+     // await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    const data = await sql<Revenue>`SELECT * FROM revenue`;
+     const data = await pool.query('SELECT * FROM revenue');
 
-    // console.log('Data fetch completed after 3 seconds.');
+     console.log('01 - Revenue data fetch completed after 3 seconds.');
 
     return data.rows;
   } catch (error) {
@@ -33,7 +45,12 @@ export async function fetchRevenue() {
 }
 
 export async function fetchLatestInvoices() {
+  noStore();
   try {
+
+    console.log('02 - Fetching latest invoices data...');
+    //await new Promise((resolve) => setTimeout(resolve, 6000));
+
     const data = await sql<LatestInvoiceRaw>`
       SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id
       FROM invoices
@@ -41,10 +58,14 @@ export async function fetchLatestInvoices() {
       ORDER BY invoices.date DESC
       LIMIT 5`;
 
-    const latestInvoices = data.rows.map((invoice) => ({
+    const pgData = await pool.query('SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id FROM invoices JOIN customers ON invoices.customer_id = customers.id ORDER BY invoices.date DESC LIMIT 5')
+
+    const latestInvoices = pgData.rows.map((invoice) => ({
       ...invoice,
       amount: formatCurrency(invoice.amount),
     }));
+
+    console.log("02 - Invoices done fetching after 6 seconds");
     return latestInvoices;
   } catch (error) {
     console.error('Database Error:', error);
@@ -53,16 +74,15 @@ export async function fetchLatestInvoices() {
 }
 
 export async function fetchCardData() {
+  noStore();
   try {
+    console.log("03 - fetching card data");
     // You can probably combine these into a single SQL query
     // However, we are intentionally splitting them to demonstrate
     // how to initialize multiple queries in parallel with JS.
-    const invoiceCountPromise = sql`SELECT COUNT(*) FROM invoices`;
-    const customerCountPromise = sql`SELECT COUNT(*) FROM customers`;
-    const invoiceStatusPromise = sql`SELECT
-         SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS "paid",
-         SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS "pending"
-         FROM invoices`;
+    const invoiceCountPromise = pool.query('SELECT COUNT(*) FROM invoices');
+    const customerCountPromise = pool.query('SELECT COUNT(*) FROM customers');
+    const invoiceStatusPromise = pool.query("SELECT SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS \"paid\", SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS \"pending\" FROM invoices");
 
     const data = await Promise.all([
       invoiceCountPromise,
@@ -74,6 +94,8 @@ export async function fetchCardData() {
     const numberOfCustomers = Number(data[1].rows[0].count ?? '0');
     const totalPaidInvoices = formatCurrency(data[2].rows[0].paid ?? '0');
     const totalPendingInvoices = formatCurrency(data[2].rows[0].pending ?? '0');
+
+    console.log("03 - Done fetching card data");
 
     return {
       numberOfCustomers,
@@ -92,9 +114,10 @@ export async function fetchFilteredInvoices(
   query: string,
   currentPage: number,
 ) {
+  noStore();
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
-
   try {
+    const pgInvoice = await pool.query(`SELECT invoices.id, invoices.amount, invoices.date, invoices.status, customers.name, customers.email, customers.image_url FROM invoices JOIN customers ON invoices.customer_id = customers.id  WHERE customers.name ILIKE $1 OR customers.email ILIKE $1 OR invoices.amount::text ILIKE $1 OR invoices.date::text ILIKE $1 OR invoices.status ILIKE $1 ORDER BY invoices.date DESC LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset};`, [`%${query}%`])
     const invoices = await sql<InvoicesTable>`
       SELECT
         invoices.id,
@@ -116,7 +139,7 @@ export async function fetchFilteredInvoices(
       LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
     `;
 
-    return invoices.rows;
+    return pgInvoice.rows;
   } catch (error) {
     console.error('Database Error:', error);
     throw new Error('Failed to fetch invoices.');
@@ -124,19 +147,22 @@ export async function fetchFilteredInvoices(
 }
 
 export async function fetchInvoicesPages(query: string) {
+  noStore();
+  console.log("fetchInvoicesPages", query, "asf");
   try {
-    const count = await sql`SELECT COUNT(*)
-    FROM invoices
-    JOIN customers ON invoices.customer_id = customers.id
-    WHERE
-      customers.name ILIKE ${`%${query}%`} OR
-      customers.email ILIKE ${`%${query}%`} OR
-      invoices.amount::text ILIKE ${`%${query}%`} OR
-      invoices.date::text ILIKE ${`%${query}%`} OR
-      invoices.status ILIKE ${`%${query}%`}
-  `;
+    const pgCount = await pool.query(`SELECT COUNT(*) FROM invoices JOIN customers ON invoices.customer_id = customers.id WHERE customers.name ILIKE $1 OR customers.email ILIKE $1 OR invoices.amount::text ILIKE $1 OR invoices.date::text ILIKE $1 OR invoices.status ILIKE $1;`, [`%${query}%`])
+//    const count = await sql`SELECT COUNT(*)
+//    FROM invoices
+//    JOIN customers ON invoices.customer_id = customers.id
+//    WHERE
+//      customers.name ILIKE ${`%${query}%`} OR
+//      customers.email ILIKE ${`%${query}%`} OR
+//      invoices.amount::text ILIKE ${`%${query}%`} OR
+//      invoices.date::text ILIKE ${`%${query}%`} OR
+//      invoices.status ILIKE ${`%${query}%`}
+//  `;
 
-    const totalPages = Math.ceil(Number(count.rows[0].count) / ITEMS_PER_PAGE);
+    const totalPages = Math.ceil(Number(pgCount.rows[0].count) / ITEMS_PER_PAGE);
     return totalPages;
   } catch (error) {
     console.error('Database Error:', error);
@@ -145,18 +171,20 @@ export async function fetchInvoicesPages(query: string) {
 }
 
 export async function fetchInvoiceById(id: string) {
+  noStore();
   try {
-    const data = await sql<InvoiceForm>`
-      SELECT
-        invoices.id,
-        invoices.customer_id,
-        invoices.amount,
-        invoices.status
-      FROM invoices
-      WHERE invoices.id = ${id};
-    `;
+    const pgData = await pool.query('select invoices.id, invoices.customer_id, invoices.amount, invoices.status FROM invoices WHERE invoices.id = $1;', [id])
+//    const data = await sql<InvoiceForm>`
+//      SELECT
+//        invoices.id,
+//        invoices.customer_id,
+//        invoices.amount,
+//        invoices.status
+//      FROM invoices
+//      WHERE invoices.id = ${id};
+//    `;
 
-    const invoice = data.rows.map((invoice) => ({
+    const invoice = pgData.rows.map((invoice) => ({
       ...invoice,
       // Convert amount from cents to dollars
       amount: invoice.amount / 100,
@@ -170,7 +198,9 @@ export async function fetchInvoiceById(id: string) {
 }
 
 export async function fetchCustomers() {
+ noStore();
   try {
+    const pgData = await pool.query('SELECT id, name FROM customers ORDER BY name ASC');
     const data = await sql<CustomerField>`
       SELECT
         id,
@@ -179,7 +209,7 @@ export async function fetchCustomers() {
       ORDER BY name ASC
     `;
 
-    const customers = data.rows;
+    const customers = pgData.rows;
     return customers;
   } catch (err) {
     console.error('Database Error:', err);
@@ -188,7 +218,9 @@ export async function fetchCustomers() {
 }
 
 export async function fetchFilteredCustomers(query: string) {
+  noStore();
   try {
+    console.log("fetch filtered customers", query);
     const data = await sql<CustomersTableType>`
 		SELECT
 		  customers.id,
@@ -206,8 +238,11 @@ export async function fetchFilteredCustomers(query: string) {
 		GROUP BY customers.id, customers.name, customers.email, customers.image_url
 		ORDER BY customers.name ASC
 	  `;
+    const pgData = await pool.query(" SELECT customers.id, customers.name, customers.email, customers.image_url, COUNT(invoices.id) AS total_invoices, SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending, SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid FROM customers LEFT JOIN invoices ON customers.id = invoices.customer_id WHERE customers.name ILIKE $1 OR customers.email ILIKE $1 GROUP BY customers.id, customers.name, customers.email, customers.image_url ORDER BY customers.name ASC", [`%${query}%`]);
 
-    const customers = data.rows.map((customer) => ({
+
+
+    const customers = pgData.rows.map((customer) => ({
       ...customer,
       total_pending: formatCurrency(customer.total_pending),
       total_paid: formatCurrency(customer.total_paid),
@@ -221,11 +256,27 @@ export async function fetchFilteredCustomers(query: string) {
 }
 
 export async function getUser(email: string) {
+  noStore();
   try {
     const user = await sql`SELECT * FROM users WHERE email=${email}`;
+    //const pgUser = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
     return user.rows[0] as User;
   } catch (error) {
     console.error('Failed to fetch user:', error);
     throw new Error('Failed to fetch user.');
+  }
+}
+
+
+export async function fetchCustomersPages(query: string) {
+  noStore();
+  try {
+    const pgCount = await pool.query(`SELECT COUNT(*) FROM customers;`); 
+
+    const totalPages = Math.ceil(Number(pgCount.rows[0].count) / ITEMS_PER_PAGE);
+    return totalPages;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch total number of invoices.');
   }
 }
